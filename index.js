@@ -23,16 +23,15 @@ const client = new BotClient({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
 });
 
-// تخزين الحسابات النشطة لكل مستخدم
-const activeSelfBots = new Map();
+// جدول لحفظ الحسابات النشطة ومعلوماتها بالكامل
+const activeAccounts = new Map(); // مفتاح: token أو معرف فرعي، القيمة: تفاصيل الحساب
 
 client.once('ready', async () => {
   console.log(`✔ بوت التحكم شغال باسم: ${client.user.tag}`);
 
-  // تسجيل أمر /panel لإرسال لوحة التحكم بالسيرفر
   const command = new SlashCommandBuilder()
     .setName('panel')
-    .setDescription('إرسال لوحة التحكم التفاعلية لإدارة السيلف بوت في الرومات الصوتية');
+    .setDescription('إرسال لوحة التحكم ومراقبة الحسابات الصوتية المتصلة');
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
   try {
@@ -44,40 +43,23 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
-  // 1. التعامل مع أمر /panel
+  // 1. أمر /panel لإرسال اللوحة
   if (interaction.isChatInputCommand() && interaction.commandName === 'panel') {
-    const embed = new EmbedBuilder()
-      .setColor('#5865F2')
-      .setTitle('🎛️ لوحة تحكم السيلف بوت الصوتية')
-      .setDescription('استخدم الأزرار أدناه للتحكم الكامل:\n\n• **تشغيل حساب**: لإدخال التوكن والآيدي وربطه بالروم الصوتي.\n• **التحكم بالصوت**: لضبط الميوت والسماعات للحساب.')
-      .setTimestamp();
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId('open_modal_btn')
-        .setLabel('➕ تشغيل حساب جديد')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId('toggle_audio_btn')
-        .setLabel('🔊 ضبط الصوت (ميوت/ديفن)')
-        .setStyle(ButtonStyle.Primary)
-    );
-
-    await interaction.reply({ embeds: [embed], components: [row] });
+    await sendControlPanel(interaction);
     return;
   }
 
-  // 2. الضغط على زر فتح النافذة (Modal)
+  // 2. زر فتح نافذة تشغيل حساب جديد
   if (interaction.isButton() && interaction.customId === 'open_modal_btn') {
     const modal = new ModalBuilder()
       .setCustomId('run_bot_modal')
-      .setTitle('إعدادات تشغيل الحساب الصوتي');
+      .setTitle('تشغيل حساب جديد في الروم الصوتي');
 
     const tokenInput = new TextInputBuilder()
       .setCustomId('token_input')
       .setLabel('توكن الحساب (Token)')
       .setStyle(TextInputStyle.Short)
-      .setPlaceholder('ضع توكن حساب الديسكورد هنا...')
+      .setPlaceholder('ضع توكن الحساب هنا...')
       .setRequired(true);
 
     const channelInput = new TextInputBuilder()
@@ -96,76 +78,79 @@ client.on('interactionCreate', async interaction => {
     return;
   }
 
-  // 3. الضغط على زر تحكم الصوت
-  if (interaction.isButton() && interaction.customId === 'toggle_audio_btn') {
-    const botData = activeSelfBots.get(interaction.user.id);
-    if (!botData || !botData.selfClient) {
-      return interaction.reply({ content: '❌ ليس لديك أي حساب مسجل أو شغال حالياً عبر هذه اللوحة.', ephemeral: true });
-    }
-
-    try {
-      const channelId = botData.channelId;
-      const selfClient = botData.selfClient;
-      const channel = await selfClient.channels.fetch(channelId);
-      
-      if (channel && channel.isVoice()) {
-        await selfClient.voice.joinChannel(channel, {
-          selfMute: false,
-          selfDeaf: false,
-        });
-        await interaction.reply({ content: '✅ تم تحديث حالة الصوت وإلغاء الميوت/الديفن بنجاح!', ephemeral: true });
-      } else {
-        await interaction.reply({ content: '❌ لم يتم العثور على الروم الصوتي.', ephemeral: true });
-      }
-    } catch (err) {
-      await interaction.reply({ content: `❌ حدث خطأ أثناء تعديل الصوت: ${err.message}`, ephemeral: true });
-    }
+  // 3. زر تحديث الحالة (Refresh Status)
+  if (interaction.isButton() && interaction.customId === 'refresh_status_btn') {
+    await updatePanelMessage(interaction);
     return;
   }
 
-  // 4. استقبال البيانات من النافذة (Modal Submit)
+  // 4. استقبال البيانات من النافذة وتشغيل السيلف بوت
   if (interaction.isModalSubmit() && interaction.customId === 'run_bot_modal') {
     const token = interaction.fields.getTextInputValue('token_input');
     const channelId = interaction.fields.getTextInputValue('channel_input');
+    const ownerTag = interaction.user.tag;
+    const ownerId = interaction.user.id;
 
-    await interaction.reply({ content: '⏳ جاري التحقق وتسجيل الدخول وإدخال الروم...', ephemeral: true });
+    await interaction.reply({ content: '⏳ جاري التحقق من الحساب وإدخاله الروم...', ephemeral: true });
 
     try {
       const selfClient = new SelfClient({ checkUpdate: false });
 
       selfClient.on('ready', async () => {
-        console.log(`[تحكم] تم تسجيل الدخول للحساب: ${selfClient.user.tag}`);
-        await joinAndKeep(selfClient, channelId);
+        const botTag = selfClient.user.tag;
+        console.log(`[تحكم] تم تسجيل الدخول للحساب: ${botTag} بواسطة ${ownerTag}`);
+        
+        // حفظ الحساب في قائمة المراقبة
+        activeAccounts.set(token, {
+          tag: botTag,
+          channelId: channelId,
+          owner: ownerTag,
+          ownerId: ownerId,
+          status: 'متصل وثابت 🟢',
+          selfClient: selfClient
+        });
+
+        await joinAndKeep(selfClient, channelId, token);
       });
 
+      // مراقبة حالة الصوت لو الحساب طلع أو فصل
       selfClient.on('voiceStateUpdate', async (oldState, newState) => {
         if (selfClient.user && oldState.id === selfClient.user.id) {
+          // إذا طلع من الروم
           if (oldState.channelId && !newState.channelId) {
-            console.log('[تحكم] تم إخراج الحساب، جاري إعادته فوراً...');
-            setTimeout(() => joinAndKeep(selfClient, channelId), 3000);
+            console.log(`[تنبيه] الحساب ${selfClient.user.tag} خرج من الروم! جاري إعادته...`);
+            
+            // تحديث الحالة في القائمة
+            const acc = activeAccounts.get(token);
+            if (acc) acc.status = 'فصل وجاري إعادة الاتصال 🟡';
+
+            setTimeout(() => joinAndKeep(selfClient, channelId, token), 3000);
+          }
+          // إذا رجع وشبك
+          else if (!oldState.channelId && newState.channelId) {
+            const acc = activeAccounts.get(token);
+            if (acc) acc.status = 'متصل وثابت 🟢';
           }
         }
       });
 
       await selfClient.login(token);
-      
-      // حفظ الجلسة الخاصة بالمستخدم
-      activeSelfBots.set(interaction.user.id, { selfClient, channelId });
 
       await interaction.followUp({ 
-        content: `✅ تم تشغيل الحساب **${selfClient.user.tag}** واستقراره في الروم الصوتي بنجاح وثبات تام!`, 
+        content: `✅ تم تشغيل الحساب بنجاح وتم إضافته إلى لوحة المراقبة!`, 
         ephemeral: true 
       });
     } catch (err) {
       await interaction.followUp({ 
-        content: `❌ فشل التشغيل: تأكد أن التوكن صحيح أو آيدي الروم صالح (يمكنه دخول أي سيرفر آخر).`, 
+        content: `❌ فشل التشغيل: تأكد من صحة التوكن أو آيدي الروم.`, 
         ephemeral: true 
       });
     }
   }
 });
 
-async function joinAndKeep(selfClient, channelId) {
+// دالة لدخول الروم والبقاء فيه
+async function joinAndKeep(selfClient, channelId, token) {
   try {
     const channel = await selfClient.channels.fetch(channelId);
     if (channel && channel.isVoice()) {
@@ -173,12 +158,80 @@ async function joinAndKeep(selfClient, channelId) {
         selfMute: false,
         selfDeaf: false,
       });
-      console.log(`🎉 الحساب دخل الروم: ${channel.name} وشغال بدون ما يفك.`);
+      const acc = activeAccounts.get(token);
+      if (acc) acc.status = 'متصل وثابت 🟢';
+      console.log(`🎉 الحساب دخل الروم بنجاح وثبت فيه.`);
     }
   } catch (err) {
     console.error('خطأ في دخول الصوت:', err.message);
-    setTimeout(() => joinAndKeep(selfClient, channelId), 5000);
+    const acc = activeAccounts.get(token);
+    if (acc) acc.status = 'خطأ في الاتصال 🔴';
+    setTimeout(() => joinAndKeep(selfClient, channelId, token), 5000);
   }
+}
+
+// دالة إنشاء لوحة التحكم
+async function sendControlPanel(interaction) {
+  const embed = new EmbedBuilder()
+    .setColor('#5865F2')
+    .setTitle('📊 لوحة مراقبة الحسابات الصوتية')
+    .setDescription('هذه اللوحة تعرض كافة الحسابات الشغالة حالياً، من الذي قام بتشغيلها، وحالتها في الرومات الصوتية.')
+    .setTimestamp();
+
+  if (activeAccounts.size === 0) {
+    embed.addFields({ name: 'الحسابات النشطة', value: 'لا توجد أي حسابات تعمل حالياً. اضغط على زر التشغيل بالأسفل لإضافة حساب.' });
+  } else {
+    let desc = '';
+    activeAccounts.forEach((acc, token) => {
+      desc += `👤 **الحساب:** \`${acc.tag}\`\n🔊 **الروم:** \`${acc.channelId}\`\n🛠️ **شغله العضو:** <@${acc.ownerId}>\n📌 **الحالة:** ${acc.status}\n----------------------------------\n`;
+    });
+    embed.addFields({ name: '🎛️ قائمة الحسابات المتصلة:', value: desc });
+  }
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('open_modal_btn')
+      .setLabel('➕ تشغيل حساب جديد')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('refresh_status_btn')
+      .setLabel('🔄 تحديث الحالة')
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  await interaction.reply({ embeds: [embed], components: [row] });
+}
+
+// دالة تحديث الرسالة لما يضغط زر التحديث
+async function updatePanelMessage(interaction) {
+  const embed = new EmbedBuilder()
+    .setColor('#5865F2')
+    .setTitle('📊 لوحة مراقبة الحسابات الصوتية')
+    .setDescription('تم تحديث بيانات وحالة الحسابات المتصلة حالياً.')
+    .setTimestamp();
+
+  if (activeAccounts.size === 0) {
+    embed.addFields({ name: 'الحسابات النشطة', value: 'لا توجد أي حسابات تعمل حالياً.' });
+  } else {
+    let desc = '';
+    activeAccounts.forEach((acc, token) => {
+      desc += `👤 **الحساب:** \`${acc.tag}\`\n🔊 **الروم:** \`${acc.channelId}\`\n🛠️ **شغله العضو:** <@${acc.ownerId}>\n📌 **الحالة:** ${acc.status}\n----------------------------------\n`;
+    });
+    embed.addFields({ name: '🎛️ قائمة الحسابات المتصلة:', value: desc });
+  }
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('open_modal_btn')
+      .setLabel('➕ تشغيل حساب جديد')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('refresh_status_btn')
+      .setLabel('🔄 تحديث الحالة')
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  await interaction.update({ embeds: [embed], components: [row] });
 }
 
 client.login(process.env.DISCORD_BOT_TOKEN);
