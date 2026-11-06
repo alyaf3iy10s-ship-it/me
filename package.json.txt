@@ -1,0 +1,13 @@
+{
+  "name": "discord-control-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.0",
+    "discord.js-selfbot-v13": "^13.14.2",
+    "express": "^4.19.2"
+  }
+}
