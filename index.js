@@ -57,7 +57,7 @@ client.on('interactionCreate', async interaction => {
 
       await selfClient.login(token);
       await interaction.followUp({ content: `✅ تم تشغيل الحساب واستقراره في الروم بنجاح!`, ephemeral: true });
-    } المشروع catch (err) {
+    } catch (err) {
       await interaction.followUp({ content: `❌ فشل التشغيل: تأكد أن التوكن صحيح أو الروم صوتي.`, ephemeral: true });
     }
   }
